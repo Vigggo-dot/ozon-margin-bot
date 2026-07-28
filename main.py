@@ -179,20 +179,18 @@ def create_pdf_report(calc_data, chart_buf):
 
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('PdfTitle', parent=styles['Heading1'], fontName=FONT_NAME, fontSize=16, textColor=colors.HexColor('#1E1E2E'), spaceAfter=4)
-    subtitle_style = ParagraphStyle('PdfSubTitle', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.HexColor('#666666'), spaceAfter=12)
+    title_style = ParagraphStyle('PdfTitle', parent=styles['Heading1'], fontName=FONT_NAME, fontSize=15, textColor=colors.HexColor('#1E1E2E'), spaceAfter=4)
+    subtitle_style = ParagraphStyle('PdfSubTitle', parent=styles['Normal'], fontName=FONT_NAME, fontSize=9, textColor=colors.HexColor('#666666'), spaceAfter=10)
     cell_style = ParagraphStyle('PdfCell', parent=styles['Normal'], fontName=FONT_NAME, fontSize=9, textColor=colors.HexColor('#333333'))
     header_style = ParagraphStyle('PdfHeader', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.whitesmoke)
     footer_style = ParagraphStyle('PdfFooter', parent=styles['Normal'], fontName=FONT_NAME, fontSize=8, textColor=colors.HexColor('#888888'), alignment=1)
 
     platform_name = calc_data.get('platform', 'Ozon')
     
-    # Заголовок отчета
     story.append(Paragraph(f"Финансовый отчёт Unit-Economics ({platform_name})", title_style))
-    story.append(Paragraph("Сгенерировано умным ботом-аналитиком селлеров 🦝", subtitle_style))
+    story.append(Paragraph("Сгенерировано умным ботом-аналитиком селлеров", subtitle_style))
     story.append(Spacer(1, 5))
 
-    # Таблица данных
     table_data = [[
         Paragraph("<b>Параметр</b>", header_style), 
         Paragraph("<b>Значение</b>", header_style)
@@ -214,23 +212,24 @@ def create_pdf_report(calc_data, chart_buf):
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DDDDDD')),
     ]))
     story.append(t)
+    story.append(Spacer(1, 10))
+
+    badge_text = calc_data.get('badge', 'Анализ рынка')
+    verdict_text = calc_data.get('verdict', '')
+
+    story.append(Paragraph(f"<b>Статус / Титул:</b> {badge_text}", cell_style))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(f"<b>Вердикт аналитика:</b> {verdict_text}", cell_style))
     story.append(Spacer(1, 12))
 
-    # Вердикт и титул
-    story.append(Paragraph(f"<b>Титул селлера:</b> {calc_data.get('badge', 'Исследователь рынка')}", cell_style))
-    story.append(Spacer(1, 4))
-    story.append(Paragraph(f"<b>Вердикт енота-аналитика:</b> {calc_data['verdict']}", cell_style))
-    story.append(Spacer(1, 15))
-
-    # График
     if chart_buf:
         chart_buf.seek(0)
         img = Image(chart_buf, width=380, height=240)
         story.append(img)
     
-    story.append(Spacer(1, 20))
-    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#CCCCCC'), spaceBefore=5, spaceAfter=10))
-    story.append(Paragraph("💡 Полезный инструмент для селлеров WB и Ozon | Сделано с заботой о вашем бизнесе", footer_style))
+    story.append(Spacer(1, 15))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#CCCCCC'), spaceBefore=5, spaceAfter=8))
+    story.append(Paragraph("Полезный инструмент для селлеров WB и Ozon | Сделано с заботой о бизнесе", footer_style))
 
     doc.build(story)
     pdf_buf.seek(0)
@@ -334,16 +333,15 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
     margin = (net_profit / price) * 100 if price else 0
     roi = (net_profit / cost) * 100 if cost else 0
 
-    # Геймификация: присвоение титула
     if margin < 10 or net_profit < 100:
-        badge = "⚠️ Камикадзе с демпингом"
-        verdict = "Маржа узкая. Есть большой риск уйти в минус при акциях или росте расходов на рекламу."
+        badge = "Камикадзе с демпингом"
+        verdict = "Маржа узкая. Риск уйти в минус при акциях или росте расходов."
     elif margin >= 25 and roi >= 60:
-        badge = "🦈 Акула маркетплейсов"
-        verdict = "Отличная экономика! Высокий запас прочности и прекрасный потенциал."
+        badge = "Акула маркетплейсов"
+        verdict = "Отличная экономика! Высокий запас прочности."
     else:
-        badge = "🌱 Уверенный середнячок"
-        verdict = "Нормальные рабочие показатели для старта. Следите за ставками рекламы."
+        badge = "Уверенный середнячок"
+        verdict = "Нормальные рабочие показатели для старта."
 
     ad_str = f"\n• Реклама ДРР ({drr_pct}%): **{ad_cost:.2f} ₽**" if drr_pct > 0 else ""
 
@@ -361,7 +359,7 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
         f"💰 **Чистая прибыль:** **{net_profit:.2f} ₽**\n"
         f"📈 **Маржинальность:** **{margin:.2f}%**\n"
         f"🚀 **ROI:** **{roi:.2f}%**\n\n"
-        f"🏅 Титул: **{badge}**\n"
+        f"🏅 Статус: **{badge}**\n"
         f"💡 {verdict}"
     )
 
@@ -491,13 +489,13 @@ async def process_niche_analysis(message: types.Message, state: FSMContext):
 
     if unit_profit <= 0:
         niche_verdict = "Высокий риск: Убытки при выбранной рекламной ставке."
-        badge = "⛔ Тонущий корабль"
+        badge = "Тонущий корабль"
     elif unit_profit < 150:
-        niche_verdict = "Низкая маржа: Потребуется гигантский объем или снижение закупки."
-        badge = "⚡ Зона риска"
+        niche_verdict = "Низкая маржа: Потребуется большой объем или снижение закупки."
+        badge = "Зона риска"
     else:
         niche_verdict = "Перспективно: Отличный запас прочности для старта."
-        badge = "🚀 Золотая жила"
+        badge = "Золотая жила"
 
     text = (
         f"📈 **Потенциал ниши**\n"
@@ -572,8 +570,6 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    port = int(os.environ.0.get("PORT", 10000) if hasattr(os.environ, "get") else 10000)
-    # Исправление для стандартного получения порта из окружения
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     asyncio.create_task(site.start())
