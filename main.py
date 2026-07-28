@@ -1,11 +1,16 @@
 import asyncio
 import os
 import re
+import io
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+
+import matplotlib
+matplotlib.use('Agg')  # Фоновый режим для серверов без GUI
+import matplotlib.pyplot as plt
 
 TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -17,80 +22,116 @@ class CalcState(StatesGroup):
     waiting_for_target_price_data = State()
     waiting_for_niche_data = State()
 
-# --- Главное меню (Клавиатура под полем ввода) ---
+# --- Тексты и Уютный Стиль ---
+START_TEXT = (
+    "Приветствую! ✨\n\n"
+    "Я твой уютный аналитический ассистент по Ozon. Моя задача — бережно просчитать "
+    "юнит-экономику, подсказать безопасную цену и оценить риски входа в нишу.\n\n"
+    "Выбери, с чего начнем:"
+)
+
+# --- Клавиатуры ---
 def get_main_keyboard():
     kb = [
         [types.KeyboardButton(text="📊 Рассчитать маржу"), types.KeyboardButton(text="🎯 Подобрать цену")],
-        [types.KeyboardButton(text="📈 Анализ ниши / Порог входа")]
+        [types.KeyboardButton(text="📈 Экспресс-анализ ниши")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- Inline-кнопки под ответами ---
 def get_action_inline_kb():
     kb = [
         [
-            types.InlineKeyboardButton(text="🧮 Рассчитать маржу", callback_data="act_margin"),
+            types.InlineKeyboardButton(text="📊 Рассчитать маржу", callback_data="act_margin"),
             types.InlineKeyboardButton(text="🎯 Подобрать цену", callback_data="act_price")
         ],
         [
-            types.InlineKeyboardButton(text="📈 Оценить нишу", callback_data="act_niche")
+            types.InlineKeyboardButton(text="📈 Анализ ниши", callback_data="act_niche")
         ]
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=kb)
 
-def get_cancel_keyboard():
-    kb = [[types.KeyboardButton(text="❌ Отмена")]]
-    return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+def get_cancel_inline_kb():
+    kb = [[types.InlineKeyboardButton(text="❌ Отменить ввод", callback_data="act_cancel")]]
+    return types.InlineKeyboardMarkup(inline_keyboard=kb)
 
 def parse_numbers(text: str):
     clean_text = text.replace('%', '').replace(',', '.')
     numbers = re.findall(r"[-+]?\d*\.\d+|\d+", clean_text)
     return [float(n) for n in numbers]
 
+# --- Генератор Графиков ---
+def generate_chart_png(labels, values, colors, title):
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=120)
+    fig.patch.set_facecolor('#1E1E2E')  # Мягкий тёмный фон
+    ax.set_facecolor('#1E1E2E')
+
+    # Круговая диаграмма
+    wedges, texts, autotexts = ax.pie(
+        values, 
+        labels=labels, 
+        colors=colors, 
+        autopct='%1.1f%%',
+        startangle=140,
+        textprops=dict(color="w", weight="bold"),
+        pctdistance=0.75,
+        wedgeprops=dict(width=0.4, edgecolor='#1E1E2E', linewidth=2) # Стильный Doughnut chart
+    )
+
+    for t in texts:
+        t.set_color('#CDD6F4')
+        t.set_fontsize(10)
+    for at in autotexts:
+        at.set_color('#11111B')
+        at.set_fontsize(9)
+
+    ax.set_title(title, color='#CDD6F4', fontsize=12, pad=15, weight="bold")
+    
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), transparent=False)
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
 # --- Старт и Отмена ---
 @dp.message(CommandStart())
-@dp.message(F.text == "❌ Отмена")
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        f"Привет, **{message.from_user.first_name}**! 👋\n\n"
-        f"🚀 Я твой аналитический ассистент по маркетплейсу **Ozon**.\n\n"
-        f"Чем займемся сегодня?\n"
-        f"• Посчитаем чистую прибыль и ROI\n"
-        f"• Подберем идеальную цену продажи\n"
-        f"• Оценим потенциал и риски ниши\n\n"
-        f"Выбери нужный режим ниже 👇",
-        reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
-    )
+    await message.answer(START_TEXT, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+
+@dp.callback_query(F.data == "act_cancel")
+async def cancel_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Ввод отменен", show_alert=False)
+    await callback.message.edit_text("💡 Ввод отменен. Выберите нужное действие из меню ниже:")
 
 # --- Режим 1: Расчёт маржи ---
 @dp.message(F.text == "📊 Рассчитать маржу")
 @dp.callback_query(F.data == "act_margin")
 async def start_calc_margin(event: types.Message | types.CallbackQuery, state: FSMContext):
     await state.set_state(CalcState.waiting_for_margin_data)
-    text = (
-        "📊 **Расчет чистой прибыли и маржи**\n\n"
+    prompt = (
+        "☕ **Расчёт юнит-экономики**\n\n"
         "Отправьте **6 чисел через пробел**:\n"
-        "1️⃣ Цена продажи (₽)\n"
-        "2️⃣ Себестоимость / закупка (₽)\n"
-        "3️⃣ Комиссия Ozon (%)\n"
-        "4️⃣ Логистика (₽)\n"
-        "5️⃣ Эквайринг (%)\n"
-        "6️⃣ Налог (%)\n\n"
-        "💡 **Пример ввода:**\n`1500 500 15 150 1.5 6`"
+        "1. Цена продажи (₽)\n"
+        "2. Себестоимость закупки (₽)\n"
+        "3. Комиссия Ozon (%)\n"
+        "4. Логистика (₽)\n"
+        "5. Эквайринг (%)\n"
+        "6. Налог (%)\n\n"
+        "📋 _Пример:_ `1500 500 15 150 1.5 6`"
     )
     if isinstance(event, types.CallbackQuery):
-        await event.message.answer(text, reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+        await event.message.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
         await event.answer()
     else:
-        await event.answer(text, reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+        await event.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
 
 @dp.message(CalcState.waiting_for_margin_data)
 async def process_margin_calc(message: types.Message, state: FSMContext):
     parts = parse_numbers(message.text)
     if len(parts) < 6:
-        await message.answer("⚠️ **Нужно ввести 6 чисел через пробел!**\nПример: `1500 500 15 150 1.5 6`", parse_mode="Markdown")
+        await message.answer("⚠️ Пожалуйста, введите **6 чисел** через пробел.\nПример: `1500 500 15 150 1.5 6`", parse_mode="Markdown")
         return
 
     price, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
@@ -105,29 +146,40 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
     roi = (net_profit / cost) * 100 if cost else 0
 
     if margin < 12 or net_profit < 100:
-        verdict = "⚠️ **Опасно!** Очень узкая маржа. Любая акция или рекламные расходы уведут вас в минус."
+        verdict = "⚠️ **Внимание:** Маржа довольно узкая. Любые скидки или акции могут увести продажи в минус."
     elif margin >= 25 and roi >= 60:
-        verdict = "🔥 **Пушка!** Высокая маржинальность. Товар отлично подходит для масштабирования."
+        verdict = "✨ **Отличный вариант!** Высокая маржинальность позволяет активно инвестировать в рекламу."
     else:
-        verdict = "👍 **Адекватно.** Нормальная рабочая экономика. Главное — держать под контролем ДРР (рекламу)."
+        verdict = "🌱 **Рабочая модель.** Нормальные показатели для спокойных продаж."
 
     text = (
-        f"📊 **ФИНАНСОВЫЙ РАСКЛАД**\n"
-        f"───────────────────\n"
-        f"💵 Цена продажи: **{price:.2f} ₽**\n"
-        f"📦 Закупка: **{cost:.2f} ₽**\n\n"
-        f"💸 **Структура расходов:**\n"
+        f"📊 **Анализ юнит-экономики**\n"
+        f"═══════════════════\n"
+        f"🏷️ Цена: **{price:.2f} ₽**  |  📦 Закупка: **{cost:.2f} ₽**\n\n"
+        f"💸 **Расходы с продажи:**\n"
         f"• Комиссия Ozon ({comm_pct}%): **{ozon_comm:.2f} ₽**\n"
         f"• Логистика: **{deliv:.2f} ₽**\n"
         f"• Эквайринг ({acq_pct}%): **{acquiring:.2f} ₽**\n"
         f"• Налог ({tax_pct}%): **{tax:.2f} ₽**\n"
-        f"───────────────────\n"
+        f"═══════════════════\n"
         f"💰 **Чистая прибыль:** **{net_profit:.2f} ₽**\n"
         f"📈 **Маржинальность:** **{margin:.2f}%**\n"
-        f"🚀 **ROI (окупаемость):** **{roi:.2f}%**\n\n"
+        f"🚀 **ROI:** **{roi:.2f}%**\n\n"
         f"{verdict}"
     )
-    await message.answer(text, reply_markup=get_action_inline_kb(), parse_mode="Markdown")
+
+    # Генерация графика
+    if net_profit > 0:
+        labels = ['Закупка', 'Комиссия', 'Логистика', 'Эквайринг/Налог', 'Прибыль']
+        values = [cost, ozon_comm, deliv, acquiring + tax, net_profit]
+        colors = ['#F38BA8', '#FAB387', '#F9E2AF', '#A6E3A1', '#89B4FA']
+        
+        chart_buf = generate_chart_png(labels, values, colors, "Структура цены товара")
+        photo = types.BufferedInputFile(chart_buf.read(), filename="chart.png")
+        await message.answer_photo(photo, caption=text, reply_markup=get_action_inline_kb(), parse_mode="Markdown")
+    else:
+        await message.answer(text, reply_markup=get_action_inline_kb(), parse_mode="Markdown")
+
     await state.clear()
 
 # --- Режим 2: Подбор цены ---
@@ -135,124 +187,119 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "act_price")
 async def start_calc_price(event: types.Message | types.CallbackQuery, state: FSMContext):
     await state.set_state(CalcState.waiting_for_target_price_data)
-    text = (
-        "🎯 **Подбор идеальной цены продажи**\n\n"
+    prompt = (
+        "🎯 **Подбор оптимальной цены**\n\n"
         "Отправьте **6 чисел через пробел**:\n"
-        "1️⃣ Желаемая чистая прибыль (₽)\n"
-        "2️⃣ Себестоимость / закупка (₽)\n"
-        "3️⃣ Комиссия Ozon (%)\n"
-        "4️⃣ Логистика (₽)\n"
-        "5️⃣ Эквайринг (%)\n"
-        "6️⃣ Налог (%)\n\n"
-        "💡 **Пример ввода:**\n`300 500 15 150 1.5 6`"
+        "1. Желаемая прибыль с штуки (₽)\n"
+        "2. Себестоимость закупки (₽)\n"
+        "3. Комиссия Ozon (%)\n"
+        "4. Логистика (₽)\n"
+        "5. Эквайринг (%)\n"
+        "6. Налог (%)\n\n"
+        "📋 _Пример:_ `300 500 15 150 1.5 6`"
     )
     if isinstance(event, types.CallbackQuery):
-        await event.message.answer(text, reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+        await event.message.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
         await event.answer()
     else:
-        await event.answer(text, reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+        await event.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
 
 @dp.message(CalcState.waiting_for_target_price_data)
 async def process_target_price(message: types.Message, state: FSMContext):
     parts = parse_numbers(message.text)
     if len(parts) < 6:
-        await message.answer("⚠️ **Нужно ввести 6 чисел через пробел!**\nПример: `300 500 15 150 1.5 6`", parse_mode="Markdown")
+        await message.answer("⚠️ Пожалуйста, введите **6 чисел** через пробел.\nПример: `300 500 15 150 1.5 6`", parse_mode="Markdown")
         return
 
     target_profit, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
 
     pct_sum = (comm_pct + acq_pct + tax_pct) / 100
     if pct_sum >= 1:
-        await message.answer("⚠️ Сумма комиссий и налогов не может быть 100% или больше!")
+        await message.answer("⚠️ Сумма комиссий и налогов не может превышать 100%.")
         return
 
     needed_price = (target_profit + cost + deliv) / (1 - pct_sum)
 
     text = (
-        f"🎯 **РЕКОМЕНДУЕМАЯ ЦЕНА**\n"
-        f"───────────────────\n"
+        f"🎯 **Рекомендуемая розничная цена**\n"
+        f"═══════════════════\n"
         f"Чтобы забирать чистыми **{target_profit:.2f} ₽** с каждой продажи:\n\n"
-        f"🏷️ Выставляйте цену: **{needed_price:.2f} ₽**\n\n"
-        f"💡 *Совет:* Сравните эту цену с ТОП-10 карточками на Ozon. Если ваша цена ниже конкурентов — вы в идеальной позиции!"
+        f"🏷️ Минимальная цена: **{needed_price:.2f} ₽**\n\n"
+        f"💡 _Совет:_ Сверьте эту цену с топовыми продавцами в категории."
     )
     await message.answer(text, reply_markup=get_action_inline_kb(), parse_mode="Markdown")
     await state.clear()
 
 # --- Режим 3: Экспресс-анализ ниши ---
-@dp.message(F.text == "📈 Анализ ниши / Порог входа")
+@dp.message(F.text == "📈 Экспресс-анализ ниши")
 @dp.callback_query(F.data == "act_niche")
 async def start_niche_analysis(event: types.Message | types.CallbackQuery, state: FSMContext):
     await state.set_state(CalcState.waiting_for_niche_data)
-    text = (
-        "📈 **Экспресс-оценка ниши и порога входа**\n\n"
+    prompt = (
+        "📈 **Экспресс-оценка ниши**\n\n"
         "Отправьте **4 значения через пробел**:\n"
-        "1️⃣ Средняя цена товара в нише (₽)\n"
-        "2️⃣ Закупка товара (₽)\n"
-        "3️⃣ Ожидаемый ДРР / Реклама (%)\n"
-        "4️⃣ Планируемый объем продаж (шт/мес)\n\n"
-        "💡 **Пример ввода:**\n`1200 400 15 200`\n"
-        "*(Цена 1200₽, закупка 400₽, реклама 15%, продаем 200 шт в месяц)*"
+        "1. Средняя цена в нише (₽)\n"
+        "2. Себестоимость закупки (₽)\n"
+        "3. Ожидаемый ДРР / Реклама (%)\n"
+        "4. Планируемый объем (шт/мес)\n\n"
+        "📋 _Пример:_ `1200 400 15 200`"
     )
     if isinstance(event, types.CallbackQuery):
-        await event.message.answer(text, reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+        await event.message.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
         await event.answer()
     else:
-        await event.answer(text, reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+        await event.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
 
 @dp.message(CalcState.waiting_for_niche_data)
 async def process_niche_analysis(message: types.Message, state: FSMContext):
     parts = parse_numbers(message.text)
     if len(parts) < 4:
-        await message.answer("⚠️ **Нужно ввести 4 числа через пробел!**\nПример: `1200 400 15 200`", parse_mode="Markdown")
+        await message.answer("⚠️ Введите **4 числа** через пробел.\nПример: `1200 400 15 200`", parse_mode="Markdown")
         return
 
     avg_price, cost, drr_pct, monthly_sales = parts[:4]
 
-    # Усреднённые комиссии Ozon (~20% комиссия + логистика ~150р + 2% эквайринг + 6% налог)
     est_ozon_fees = avg_price * 0.22 + 150 + (avg_price * 0.06)
     est_ad_costs = avg_price * (drr_pct / 100)
     
     unit_profit = avg_price - cost - est_ozon_fees - est_ad_costs
     total_revenue = avg_price * monthly_sales
     total_net_profit = unit_profit * monthly_sales
-    required_capital = (cost * monthly_sales) + (monthly_sales * 100) # закупка + резерв на логистику/упаковку
+    required_capital = (cost * monthly_sales) + (monthly_sales * 100)
 
     if unit_profit <= 0:
-        niche_verdict = "⛔ **Ниша перегрета!** При таком ДРР и закупке вы будете работать в убыток."
+        niche_verdict = "⛔ **Высокий риск:** Высокая вероятность уйти в минус при текущих расходах на рекламу."
     elif unit_profit < 150:
-        niche_verdict = "⚡ **Высокий риск.** Низкая прибыль с единицы. Требуется объём или более дешевая закупка."
+        niche_verdict = "⚡ **Узкая маржа:** Потребуется большой оборот или снижение себестоимости закупки."
     else:
-        niche_verdict = "🟢 **Перспективная ниша!** Запас прочности позволяет конкурировать и закладывать бюджет на продвижение."
+        niche_verdict = "🟢 **Перспективно:** Хороший запас прочности для развития товара."
 
     text = (
-        f"📈 **АНАЛИЗ ПОТЕНЦИАЛА НИШИ**\n"
-        f"───────────────────\n"
+        f"📈 **Потенциал ниши**\n"
+        f"═══════════════════\n"
         f"💵 Средний чек: **{avg_price:.2f} ₽**\n"
-        f"📊 Оборот при {int(monthly_sales)} шт/мес: **{total_revenue:,.2f} ₽**\n\n"
-        f"💰 **Чистый заработок с 1 шт:** **{unit_profit:.2f} ₽**\n"
-        f"🏆 **Чистая прибыль в месяц:** **{total_net_profit:,.2f} ₽**\n"
-        f"💼 **Мин. капитал на закупку:** **{required_capital:,.2f} ₽**\n"
-        f"───────────────────\n"
+        f"📊 Оборот ({int(monthly_sales)} шт/мес): **{total_revenue:,.2f} ₽**\n\n"
+        f"💰 Прибыль с 1 шт: **{unit_profit:.2f} ₽**\n"
+        f"🏆 Чистая прибыль в месяц: **{total_net_profit:,.2f} ₽**\n"
+        f"💼 Старт. капитал на партию: **{required_capital:,.2f} ₽**\n"
+        f"═══════════════════\n"
         f"{niche_verdict}"
     )
     await message.answer(text, reply_markup=get_action_inline_kb(), parse_mode="Markdown")
     await state.clear()
 
-# --- Ловец всего остального ---
+# --- Fallback ---
 @dp.message()
 async def fallback_handler(message: types.Message, state: FSMContext):
     parts = parse_numbers(message.text)
     if len(parts) >= 6:
         await process_margin_calc(message, state)
     else:
-        await message.answer(
-            "🤖 Выбери команду в меню или нажми `/start`",
-            reply_markup=get_main_keyboard()
-        )
+        await message.answer("🤖 Воспользуйтесь меню ниже или нажмите `/start`", reply_markup=get_main_keyboard())
 
-# --- Веб-сервер для Render ---
+# --- Server ---
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot running smoothly!")
 
 async def main():
     app = web.Application()
