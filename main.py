@@ -38,11 +38,15 @@ async def start_cmd(message: types.Message, state: FSMContext):
 async def start_calc_margin(message: types.Message, state: FSMContext):
     await state.set_state(CalcState.waiting_for_margin_data)
     await message.answer(
-        "📥 **Введите данные через пробел:**\n\n"
-        "`Цена_продажи Закупка Комиссия_% Логистика Эквайринг_% Налог_%`\n\n"
-        "💡 **Пример:**\n"
-        "`1500 500 15 150 1.5 6`\n\n"
-        "*(где 1500 — цена, 500 — себестоимость, 15% — комиссия Ozon, 150₽ — логистика, 1.5% — эквайринг, 6% — налог)*",
+        "📊 **Введите 6 значений через пробел:**\n\n"
+        "1. Цена продажи (₽)\n"
+        "2. Себестоимость / закупка (₽)\n"
+        "3. Комиссия Ozon (%)\n"
+        "4. Логистика (₽)\n"
+        "5. Эквайринг (%)\n"
+        "6. Налог (%)\n\n"
+        "💡 **Пример ввода:**\n"
+        "**1500 500 15 150 1.5 6**",
         parse_mode="Markdown"
     )
 
@@ -67,16 +71,16 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
         text = (
             f"📊 **Результаты расчета:**\n\n"
             f"💵 Цена продажи: **{price:.2f} ₽**\n"
-            f"📦 Закупка/Себестоимость: **{cost:.2f} ₽**\n\n"
+            f"📦 Закупка: **{cost:.2f} ₽**\n\n"
             f"💸 **Расходы:**\n"
             f"• Комиссия Ozon ({comm_pct}%): **{ozon_comm:.2f} ₽**\n"
             f"• Логистика: **{deliv:.2f} ₽**\n"
             f"• Эквайринг ({acq_pct}%): **{acquiring:.2f} ₽**\n"
             f"• Налог ({tax_pct}%): **{tax:.2f} ₽**\n"
             f"-------------------------------\n"
-            f"💰 **Чистая прибыль:** `{net_profit:.2f} ₽`\n"
-            f"📈 **Маржинальность:** `{margin:.2f}%`\n"
-            f"🚀 **ROI (окупаемость):** `{roi:.2f}%`"
+            f"💰 **Чистая прибыль:** **{net_profit:.2f} ₽**\n"
+            f"📈 **Маржинальность:** **{margin:.2f}%**\n"
+            f"🚀 **ROI:** **{roi:.2f}%**"
         )
         await message.answer(text, parse_mode="Markdown")
         await state.clear()
@@ -88,11 +92,16 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
 async def start_calc_price(message: types.Message, state: FSMContext):
     await state.set_state(CalcState.waiting_for_target_price_data)
     await message.answer(
-        "🎯 **Введите данные для подбора цены через пробел:**\n\n"
-        "`Желаемая_прибыль Закупка Комиссия_% Логистика Эквайринг_% Налог_%`\n\n"
-        "💡 **Пример:**\n"
-        "`300 500 15 150 1.5 6`\n\n"
-        "*(300₽ — сколько хочешь чистыми с штуки)*",
+        "🎯 **Введите 6 значений через пробел:**\n\n"
+        "1. Желаемая чистая прибыль (₽)\n"
+        "2. Себестоимость / закупка (₽)\n"
+        "3. Комиссия Ozon (%)\n"
+        "4. Логистика (₽)\n"
+        "5. Эквайринг (%)\n"
+        "6. Налог (%)\n\n"
+        "💡 **Пример ввода:**\n"
+        "**300 500 15 150 1.5 6**\n\n"
+        "*(где 300 — чистый заработок с одной штуки)*",
         parse_mode="Markdown"
     )
 
@@ -113,15 +122,15 @@ async def process_target_price(message: types.Message, state: FSMContext):
         needed_price = (target_profit + cost + deliv) / (1 - pct_sum)
 
         await message.answer(
-            f"🎯 **Идеальная цена продажи:** `{needed_price:.2f} ₽`\n\n"
-            f"Чтобы зарабатывать **{target_profit:.2f} ₽** чистыми с товара при закупке в {cost:.2f} ₽.",
+            f"🎯 **Рекомендуемая цена:** **{needed_price:.2f} ₽**\n\n"
+            f"При такой цене вы заработаете **{target_profit:.2f} ₽** чистой прибыли.",
             parse_mode="Markdown"
         )
         await state.clear()
     except Exception:
         await message.answer("⚠️ Ошибка ввода! Введите 6 чисел через пробел, как в примере.")
 
-# --- Веб-сервер для поддержания Render ---
+# --- Веб-сервер для Render ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
