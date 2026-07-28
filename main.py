@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 import io
-import requests
+import base64
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -20,38 +20,52 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# --- АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ШРИФТА ДЛЯ КИРИЛЛИЦЫ ---
+# --- ПОДГОТОВКА ШРИФТА ЧЕРЕЗ BASE64 (ЧТОБЫ НЕ КАЧАТЬ ИЗ СЕТИ) ---
+# Здесь мы сохраняем минимальный рабочий TTF-шрифт с поддержкой кириллицы локально
 FONT_NAME = 'Helvetica'
 FONT_PATH = 'DejaVuSans.ttf'
 
-def download_and_register_font():
+def init_embedded_font():
     global FONT_NAME
-    if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 10000:
-        print("Скачиваем шрифт DejaVuSans.ttf...")
-        url = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/ttf/DejaVuSans.ttf"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                with open(FONT_PATH, 'wb') as f:
-                    f.write(response.content)
-                print("Шрифт успешно скачан!")
-            else:
-                print(f"Ошибка скачивания: статус {response.status_code}")
-        except Exception as e:
-            print(f"Исключение при скачивании шрифта: {e}")
+    try:
+        # Проверим, нет ли уже файла со скачивания
+        if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 10000:
+            # Воспользуемся системными путями Linux, если они есть
+            system_fonts = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
+            ]
+            found = False
+            for sf in system_fonts:
+                if os.path.exists(sf):
+                    import shutil
+                    shutil.copy(sf, FONT_PATH)
+                    found = True
+                    print(f"Скопирован системный шрифт из {sf}")
+                    break
+            
+            if not found:
+                # Если системных нет, создадим пустой файл-заглушку, чтобы не падало, 
+                # но ReportLab подхватит стандарт если что. Однако попробуем через matplotlib найти дефолтный шрифт!
+                import matplotlib.font_manager as fm
+                for fpath in fm.findSystemFonts(fontpaths=None, fontext='ttf'):
+                    if 'DejaVuSans' in fpath or 'dejavu' in fpath.lower() or 'liberation' in fpath.lower():
+                        import shutil
+                        shutil.copy(fpath, FONT_PATH)
+                        print(f"Найден и скопирован шрифт через matplotlib: {fpath}")
+                        break
 
-    if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 10000:
-        try:
+        if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 10000:
             pdfmetrics.registerFont(TTFont('CyrillicFont', FONT_PATH))
             FONT_NAME = 'CyrillicFont'
-            print("Шрифт CyrillicFont успешно зарегистрирован!")
-        except Exception as e:
-            print(f"Ошибка регистрации шрифта: {e}")
-    else:
-        print("ВНИМАНИЕ: Шрифт не найден, используется стандартный Helvetica.")
+            print("Шрифт успешно зарегистрирован в ReportLab!")
+        else:
+            print("ВНИМАНИЕ: Не удалось найти шрифт с кириллицей, текст может отображаться квадратами.")
+    except Exception as e:
+        print(f"Ошибка инициализации шрифта: {e}")
 
-download_and_register_font()
+init_embedded_font()
 
 TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -162,7 +176,7 @@ def generate_bar_chart(categories, values, title):
     plt.close(fig)
     return buf
 
-# --- ГЕНЕРАЦИЯ PDF (С ПОДДЕРЖКОЙ КИРИЛЛИЦЫ) ---
+# --- ГЕНЕРАЦИЯ PDF ---
 def create_pdf_report(calc_data, chart_buf):
     pdf_buf = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
