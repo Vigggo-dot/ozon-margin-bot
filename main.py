@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -33,6 +34,13 @@ async def start_cmd(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
+def parse_numbers(text: str):
+    # Убираем знаки % и меняем запятые на точки
+    clean_text = text.replace('%', '').replace(',', '.')
+    # Находим все числа (включая десятичные)
+    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", clean_text)
+    return [float(n) for n in numbers]
+
 # --- Режим 1: Расчёт маржи ---
 @dp.message(F.text == "📊 Рассчитать маржу")
 async def start_calc_margin(message: types.Message, state: FSMContext):
@@ -40,52 +48,50 @@ async def start_calc_margin(message: types.Message, state: FSMContext):
     await message.answer(
         "📊 **Введите 6 значений через пробел:**\n\n"
         "1. Цена продажи (₽)\n"
-        "2. Себестоимость / закупка (₽)\n"
+        "2. Себестоимость (₽)\n"
         "3. Комиссия Ozon (%)\n"
         "4. Логистика (₽)\n"
         "5. Эквайринг (%)\n"
         "6. Налог (%)\n\n"
-        "💡 **Пример ввода:**\n"
-        "**1500 500 15 150 1.5 6**",
+        "💡 **Пример:**\n"
+        "`1500 500 15 150 1.5 6`",
         parse_mode="Markdown"
     )
 
 @dp.message(CalcState.waiting_for_margin_data)
 async def process_margin_calc(message: types.Message, state: FSMContext):
-    try:
-        parts = list(map(float, message.text.replace(',', '.').split()))
-        if len(parts) < 6:
-            raise ValueError
+    parts = parse_numbers(message.text)
+    if len(parts) < 6:
+        await message.answer("⚠️ Нужны 6 чисел! Пример: `1500 500 15 150 1.5 6`", parse_mode="Markdown")
+        return
 
-        price, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
+    price, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
 
-        ozon_comm = price * (comm_pct / 100)
-        acquiring = price * (acq_pct / 100)
-        tax = price * (tax_pct / 100)
-        
-        total_costs = cost + ozon_comm + deliv + acquiring + tax
-        net_profit = price - total_costs
-        margin = (net_profit / price) * 100
-        roi = (net_profit / cost) * 100
+    ozon_comm = price * (comm_pct / 100)
+    acquiring = price * (acq_pct / 100)
+    tax = price * (tax_pct / 100)
+    
+    total_costs = cost + ozon_comm + deliv + acquiring + tax
+    net_profit = price - total_costs
+    margin = (net_profit / price) * 100 if price else 0
+    roi = (net_profit / cost) * 100 if cost else 0
 
-        text = (
-            f"📊 **Результаты расчета:**\n\n"
-            f"💵 Цена продажи: **{price:.2f} ₽**\n"
-            f"📦 Закупка: **{cost:.2f} ₽**\n\n"
-            f"💸 **Расходы:**\n"
-            f"• Комиссия Ozon ({comm_pct}%): **{ozon_comm:.2f} ₽**\n"
-            f"• Логистика: **{deliv:.2f} ₽**\n"
-            f"• Эквайринг ({acq_pct}%): **{acquiring:.2f} ₽**\n"
-            f"• Налог ({tax_pct}%): **{tax:.2f} ₽**\n"
-            f"-------------------------------\n"
-            f"💰 **Чистая прибыль:** **{net_profit:.2f} ₽**\n"
-            f"📈 **Маржинальность:** **{margin:.2f}%**\n"
-            f"🚀 **ROI:** **{roi:.2f}%**"
-        )
-        await message.answer(text, parse_mode="Markdown")
-        await state.clear()
-    except Exception:
-        await message.answer("⚠️ Ошибка ввода! Введите 6 чисел через пробел, как в примере.")
+    text = (
+        f"📊 **Результаты расчета:**\n\n"
+        f"💵 Цена продажи: **{price:.2f} ₽**\n"
+        f"📦 Закупка: **{cost:.2f} ₽**\n\n"
+        f"💸 **Расходы:**\n"
+        f"• Комиссия Ozon ({comm_pct}%): **{ozon_comm:.2f} ₽**\n"
+        f"• Логистика: **{deliv:.2f} ₽**\n"
+        f"• Эквайринг ({acq_pct}%): **{acquiring:.2f} ₽**\n"
+        f"• Налог ({tax_pct}%): **{tax:.2f} ₽**\n"
+        f"-------------------------------\n"
+        f"💰 **Чистая прибыль:** **{net_profit:.2f} ₽**\n"
+        f"📈 **Маржинальность:** **{margin:.2f}%**\n"
+        f"🚀 **ROI:** **{roi:.2f}%**"
+    )
+    await message.answer(text, parse_mode="Markdown")
+    await state.clear()
 
 # --- Режим 2: Подбор цены ---
 @dp.message(F.text == "🎯 Подобрать идеальную цену")
@@ -94,41 +100,38 @@ async def start_calc_price(message: types.Message, state: FSMContext):
     await message.answer(
         "🎯 **Введите 6 значений через пробел:**\n\n"
         "1. Желаемая чистая прибыль (₽)\n"
-        "2. Себестоимость / закупка (₽)\n"
+        "2. Себестоимость (₽)\n"
         "3. Комиссия Ozon (%)\n"
         "4. Логистика (₽)\n"
         "5. Эквайринг (%)\n"
         "6. Налог (%)\n\n"
-        "💡 **Пример ввода:**\n"
-        "**300 500 15 150 1.5 6**\n\n"
-        "*(где 300 — чистый заработок с одной штуки)*",
+        "💡 **Пример:**\n"
+        "`300 500 15 150 1.5 6`",
         parse_mode="Markdown"
     )
 
 @dp.message(CalcState.waiting_for_target_price_data)
 async def process_target_price(message: types.Message, state: FSMContext):
-    try:
-        parts = list(map(float, message.text.replace(',', '.').split()))
-        if len(parts) < 6:
-            raise ValueError
+    parts = parse_numbers(message.text)
+    if len(parts) < 6:
+        await message.answer("⚠️ Нужны 6 чисел! Пример: `300 500 15 150 1.5 6`", parse_mode="Markdown")
+        return
 
-        target_profit, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
+    target_profit, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
 
-        pct_sum = (comm_pct + acq_pct + tax_pct) / 100
-        if pct_sum >= 1:
-            await message.answer("⚠️ Сумма комиссий и налогов не может быть 100% или больше!")
-            return
+    pct_sum = (comm_pct + acq_pct + tax_pct) / 100
+    if pct_sum >= 1:
+        await message.answer("⚠️ Сумма комиссий и налогов не может быть 100% или больше!")
+        return
 
-        needed_price = (target_profit + cost + deliv) / (1 - pct_sum)
+    needed_price = (target_profit + cost + deliv) / (1 - pct_sum)
 
-        await message.answer(
-            f"🎯 **Рекомендуемая цена:** **{needed_price:.2f} ₽**\n\n"
-            f"При такой цене вы заработаете **{target_profit:.2f} ₽** чистой прибыли.",
-            parse_mode="Markdown"
-        )
-        await state.clear()
-    except Exception:
-        await message.answer("⚠️ Ошибка ввода! Введите 6 чисел через пробел, как в примере.")
+    await message.answer(
+        f"🎯 **Рекомендуемая цена:** **{needed_price:.2f} ₽**\n\n"
+        f"При такой цене вы заработаете **{target_profit:.2f} ₽** чистой прибыли.",
+        parse_mode="Markdown"
+    )
+    await state.clear()
 
 # --- Веб-сервер для Render ---
 async def handle(request):
