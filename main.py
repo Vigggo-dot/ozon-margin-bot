@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 import io
-import base64
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -15,22 +14,20 @@ import matplotlib.pyplot as plt
 
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus.flowables import HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# --- ПОДГОТОВКА ШРИФТА ЧЕРЕЗ BASE64 (ЧТОБЫ НЕ КАЧАТЬ ИЗ СЕТИ) ---
-# Здесь мы сохраняем минимальный рабочий TTF-шрифт с поддержкой кириллицы локально
+# --- НАСТРОЙКА ШРИФТА (КИРИЛЛИЦА) ---
 FONT_NAME = 'Helvetica'
 FONT_PATH = 'DejaVuSans.ttf'
 
 def init_embedded_font():
     global FONT_NAME
     try:
-        # Проверим, нет ли уже файла со скачивания
         if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 10000:
-            # Воспользуемся системными путями Linux, если они есть
             system_fonts = [
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                 "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -42,33 +39,26 @@ def init_embedded_font():
                     import shutil
                     shutil.copy(sf, FONT_PATH)
                     found = True
-                    print(f"Скопирован системный шрифт из {sf}")
                     break
             
             if not found:
-                # Если системных нет, создадим пустой файл-заглушку, чтобы не падало, 
-                # но ReportLab подхватит стандарт если что. Однако попробуем через matplotlib найти дефолтный шрифт!
                 import matplotlib.font_manager as fm
                 for fpath in fm.findSystemFonts(fontpaths=None, fontext='ttf'):
                     if 'DejaVuSans' in fpath or 'dejavu' in fpath.lower() or 'liberation' in fpath.lower():
                         import shutil
                         shutil.copy(fpath, FONT_PATH)
-                        print(f"Найден и скопирован шрифт через matplotlib: {fpath}")
                         break
 
         if os.path.exists(FONT_PATH) and os.path.getsize(FONT_PATH) > 10000:
             pdfmetrics.registerFont(TTFont('CyrillicFont', FONT_PATH))
             FONT_NAME = 'CyrillicFont'
             print("Шрифт успешно зарегистрирован в ReportLab!")
-        else:
-            print("ВНИМАНИЕ: Не удалось найти шрифт с кириллицей, текст может отображаться квадратами.")
     except Exception as e:
         print(f"Ошибка инициализации шрифта: {e}")
 
 init_embedded_font()
 
 TOKEN = os.environ.get("BOT_TOKEN")
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -83,7 +73,7 @@ class CalcState(StatesGroup):
 def get_main_keyboard():
     kb = [
         [types.KeyboardButton(text="📊 Рассчитать маржу"), types.KeyboardButton(text="🎯 Подобрать цену")],
-        [types.KeyboardButton(text="📈 Экспресс-анализ ниши")]
+        [types.KeyboardButton(text="📈 Экспресс-анализ ниши"), types.KeyboardButton(text="🦝 О боте и фишках")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -93,7 +83,8 @@ def get_platform_inline_kb(action_prefix):
             types.InlineKeyboardButton(text="📦 Ozon", callback_data=f"{action_prefix}_ozon"),
             types.InlineKeyboardButton(text="🟣 Wildberries", callback_data=f"{action_prefix}_wb"),
             types.InlineKeyboardButton(text="🟡 Яндекс Маркет", callback_data=f"{action_prefix}_ym")
-        ]
+        ],
+        [types.InlineKeyboardButton(text="🏠 Главное меню", callback_data="act_menu")]
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -104,16 +95,20 @@ def get_action_inline_kb(calc_id=None):
             types.InlineKeyboardButton(text="🎯 Подобрать цену", callback_data="act_price")
         ],
         [
-            types.InlineKeyboardButton(text="📈 Анализ ниши", callback_data="act_niche")
+            types.InlineKeyboardButton(text="📈 Анализ ниши", callback_data="act_niche"),
+            types.InlineKeyboardButton(text="🏠 Главное меню", callback_data="act_menu")
         ]
     ]
     if calc_id:
-        buttons.insert(0, [types.InlineKeyboardButton(text="📄 Скачать PDF-отчёт", callback_data=f"pdf_{calc_id}")])
+        buttons.insert(0, [types.InlineKeyboardButton(text="📄 Скачать брендированный PDF-отчёт", callback_data=f"pdf_{calc_id}")])
         
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_cancel_inline_kb():
-    kb = [[types.InlineKeyboardButton(text="❌ Отменить ввод", callback_data="act_cancel")]]
+    kb = [
+        [types.InlineKeyboardButton(text="❌ Отменить ввод", callback_data="act_cancel")],
+        [types.InlineKeyboardButton(text="🏠 Главное меню", callback_data="act_menu")]
+    ]
     return types.InlineKeyboardMarkup(inline_keyboard=kb)
 
 def parse_numbers(text: str):
@@ -176,7 +171,7 @@ def generate_bar_chart(categories, values, title):
     plt.close(fig)
     return buf
 
-# --- ГЕНЕРАЦИЯ PDF ---
+# --- ГЕНЕРАЦИЯ БРЕНДИРОВАННОГО PDF ---
 def create_pdf_report(calc_data, chart_buf):
     pdf_buf = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -184,14 +179,20 @@ def create_pdf_report(calc_data, chart_buf):
 
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('PdfTitle', parent=styles['Heading1'], fontName=FONT_NAME, fontSize=16, textColor=colors.HexColor('#1E1E2E'), spaceAfter=12)
+    title_style = ParagraphStyle('PdfTitle', parent=styles['Heading1'], fontName=FONT_NAME, fontSize=16, textColor=colors.HexColor('#1E1E2E'), spaceAfter=4)
+    subtitle_style = ParagraphStyle('PdfSubTitle', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.HexColor('#666666'), spaceAfter=12)
     cell_style = ParagraphStyle('PdfCell', parent=styles['Normal'], fontName=FONT_NAME, fontSize=9, textColor=colors.HexColor('#333333'))
     header_style = ParagraphStyle('PdfHeader', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.whitesmoke)
+    footer_style = ParagraphStyle('PdfFooter', parent=styles['Normal'], fontName=FONT_NAME, fontSize=8, textColor=colors.HexColor('#888888'), alignment=1)
 
     platform_name = calc_data.get('platform', 'Ozon')
+    
+    # Заголовок отчета
     story.append(Paragraph(f"Финансовый отчёт Unit-Economics ({platform_name})", title_style))
-    story.append(Spacer(1, 10))
+    story.append(Paragraph("Сгенерировано умным ботом-аналитиком селлеров 🦝", subtitle_style))
+    story.append(Spacer(1, 5))
 
+    # Таблица данных
     table_data = [[
         Paragraph("<b>Параметр</b>", header_style), 
         Paragraph("<b>Значение</b>", header_style)
@@ -213,15 +214,23 @@ def create_pdf_report(calc_data, chart_buf):
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DDDDDD')),
     ]))
     story.append(t)
+    story.append(Spacer(1, 12))
+
+    # Вердикт и титул
+    story.append(Paragraph(f"<b>Титул селлера:</b> {calc_data.get('badge', 'Исследователь рынка')}", cell_style))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(f"<b>Вердикт енота-аналитика:</b> {calc_data['verdict']}", cell_style))
     story.append(Spacer(1, 15))
 
-    story.append(Paragraph(f"<b>Вердикт:</b> {calc_data['verdict']}", cell_style))
-    story.append(Spacer(1, 15))
-
+    # График
     if chart_buf:
         chart_buf.seek(0)
         img = Image(chart_buf, width=380, height=240)
         story.append(img)
+    
+    story.append(Spacer(1, 20))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#CCCCCC'), spaceBefore=5, spaceAfter=10))
+    story.append(Paragraph("💡 Полезный инструмент для селлеров WB и Ozon | Сделано с заботой о вашем бизнесе", footer_style))
 
     doc.build(story)
     pdf_buf.seek(0)
@@ -232,25 +241,49 @@ def create_pdf_report(calc_data, chart_buf):
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Приветствую! ✨\n\n"
-        "Я твой единый бизнес-ассистент по маркетплейсам (**Ozon**, **Wildberries**, **Яндекс Маркет**).\n\n"
-        "Выбери режим работы ниже 👇",
+        "Приветствую! 🦝✨\n\n"
+        "Я твой личный бизнес-ассистент по юнит-экономике для **Ozon**, **Wildberries** и **Яндекс Маркет**.\n\n"
+        "Помогу быстро просчитать каждую позицию, уберечь от кассовых разрывов и найти идеальную цену.\n\n"
+        "Выбери нужный режим в меню ниже 👇",
         reply_markup=get_main_keyboard(), parse_mode="Markdown"
     )
+
+@dp.message(F.text == "🦝 О боте и фишках")
+async def about_bot(message: types.Message):
+    text = (
+        "🦝 **О вашем карманном аналитике**\n\n"
+        "Привет! Я создан, чтобы избавить селлеров от рутинных таблиц и головной боли с комиссиями маркетплейсов.\n\n"
+        "**Что я умею:**\n"
+        "• Считать чистую маржу и ROI с учетом всех скрытых расходов (комиссии, логистика, налоги, эквайринг, ДРР).\n"
+        "• Подбирать розничную цену под желаемую прибыль.\n"
+        "• Оценивать потенциал новых ниш перед закупкой товара.\n"
+        "• Давать классные PDF-отчёты с графиками, которыми удобно делиться в партнёрских чатах!\n\n"
+        "Выбирай нужную кнопку в меню и давай посчитаем цифры! 🚀"
+    )
+    await message.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+
+@dp.callback_query(F.data == "act_menu")
+async def menu_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "💡 Главное меню.\nВыберите инструмент для работы:",
+        reply_markup=get_action_inline_kb()
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data == "act_cancel")
 async def cancel_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("Ввод отменен")
-    await callback.message.edit_text("💡 Ввод отменен. Выберите действие из меню ниже:")
+    await callback.message.edit_text("💡 Ввод отменен. Выберите действие:", reply_markup=get_action_inline_kb())
 
-# --- ВЫБОР ПЛОЩАДКИ И РАССЧЕТ МАРЖИ ---
+# --- РАССЧЕТ МАРЖИ ---
 @dp.message(F.text == "📊 Рассчитать маржу")
 @dp.callback_query(F.data == "act_margin")
 async def choose_platform_margin(event: types.Message | types.CallbackQuery):
-    text = "Выберите маркетплейс для расчёта юнит-экономики:"
+    text = "📦 Выберите маркетплейс для расчёта юнит-экономики:"
     if isinstance(event, types.CallbackQuery):
-        await event.message.answer(text, reply_markup=get_platform_inline_kb("margin"))
+        await event.message.edit_text(text, reply_markup=get_platform_inline_kb("margin"))
         await event.answer()
     else:
         await event.answer(text, reply_markup=get_platform_inline_kb("margin"))
@@ -258,6 +291,8 @@ async def choose_platform_margin(event: types.Message | types.CallbackQuery):
 @dp.callback_query(F.data.startswith("margin_"))
 async def start_calc_margin(callback: types.CallbackQuery, state: FSMContext):
     platform = callback.data.split("_")[1].upper()
+    if platform == "YM":
+        platform = "Яндекс Маркет"
     await state.update_data(platform=platform)
     await state.set_state(CalcState.waiting_for_margin_data)
     
@@ -273,7 +308,7 @@ async def start_calc_margin(callback: types.CallbackQuery, state: FSMContext):
         "7. _(Опционально)_ Реклама/ДРР (%)\n\n"
         "📋 _Пример:_ `1500 500 15 150 1.5 6 10`"
     )
-    await callback.message.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
+    await callback.message.edit_text(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(CalcState.waiting_for_margin_data)
@@ -289,22 +324,26 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
     price, cost, comm_pct, deliv, acq_pct, tax_pct = parts[:6]
     drr_pct = parts[6] if len(parts) >= 7 else 0.0
 
-    ozon_comm = price * (comm_pct / 100)
+    comm_cost = price * (comm_pct / 100)
     acquiring = price * (acq_pct / 100)
     tax = price * (tax_pct / 100)
     ad_cost = price * (drr_pct / 100)
     
-    total_costs = cost + ozon_comm + deliv + acquiring + tax + ad_cost
+    total_costs = cost + comm_cost + deliv + acquiring + tax + ad_cost
     net_profit = price - total_costs
     margin = (net_profit / price) * 100 if price else 0
     roi = (net_profit / cost) * 100 if cost else 0
 
+    # Геймификация: присвоение титула
     if margin < 10 or net_profit < 100:
-        verdict = "⚠️ Маржа узкая. Риск работы в минус при акциях или росте расходов."
+        badge = "⚠️ Камикадзе с демпингом"
+        verdict = "Маржа узкая. Есть большой риск уйти в минус при акциях или росте расходов на рекламу."
     elif margin >= 25 and roi >= 60:
-        verdict = "✨ Отличная экономика! Высокий запас прочности."
+        badge = "🦈 Акула маркетплейсов"
+        verdict = "Отличная экономика! Высокий запас прочности и прекрасный потенциал."
     else:
-        verdict = "🌱 Нормальные рабочие показатели для старта."
+        badge = "🌱 Уверенный середнячок"
+        verdict = "Нормальные рабочие показатели для старта. Следите за ставками рекламы."
 
     ad_str = f"\n• Реклама ДРР ({drr_pct}%): **{ad_cost:.2f} ₽**" if drr_pct > 0 else ""
 
@@ -313,7 +352,7 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
         f"═══════════════════\n"
         f"🏷️ Цена: **{price:.2f} ₽**  |  📦 Закупка: **{cost:.2f} ₽**\n\n"
         f"💸 **Расходы с продажи:**\n"
-        f"• Комиссия ({comm_pct}%): **{ozon_comm:.2f} ₽**\n"
+        f"• Комиссия ({comm_pct}%): **{comm_cost:.2f} ₽**\n"
         f"• Логистика: **{deliv:.2f} ₽**\n"
         f"• Эквайринг ({acq_pct}%): **{acquiring:.2f} ₽**\n"
         f"• Налог ({tax_pct}%): **{tax:.2f} ₽**"
@@ -322,14 +361,15 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
         f"💰 **Чистая прибыль:** **{net_profit:.2f} ₽**\n"
         f"📈 **Маржинальность:** **{margin:.2f}%**\n"
         f"🚀 **ROI:** **{roi:.2f}%**\n\n"
-        f"{verdict}"
+        f"🏅 Титул: **{badge}**\n"
+        f"💡 {verdict}"
     )
 
     calc_id = f"m_{message.from_user.id}"
     chart_buf = None
     if net_profit > 0:
         labels = ['Закупка', 'Комиссия', 'Логистика', 'Налоги/Экв.', 'Прибыль']
-        values = [cost, ozon_comm, deliv, acquiring + tax, net_profit]
+        values = [cost, comm_cost, deliv, acquiring + tax, net_profit]
         colors_list = ['#F38BA8', '#FAB387', '#F9E2AF', '#A6E3A1', '#89B4FA']
         
         if drr_pct > 0:
@@ -344,7 +384,7 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
         'table': {
             'Цена продажи': f"{price:.2f} руб",
             'Закупка': f"{cost:.2f} руб",
-            'Комиссия': f"{ozon_comm:.2f} руб ({comm_pct}%)",
+            'Комиссия': f"{comm_cost:.2f} руб ({comm_pct}%)",
             'Логистика': f"{deliv:.2f} руб",
             'Эквайринг + Налог': f"{acquiring + tax:.2f} руб",
             'Реклама (ДРР)': f"{ad_cost:.2f} руб ({drr_pct}%)",
@@ -352,6 +392,7 @@ async def process_margin_calc(message: types.Message, state: FSMContext):
             'Маржинальность': f"{margin:.2f}%",
             'ROI': f"{roi:.2f}%"
         },
+        'badge': badge,
         'verdict': verdict,
         'chart': chart_buf
     }
@@ -381,7 +422,7 @@ async def start_calc_price(event: types.Message | types.CallbackQuery, state: FS
         "📋 _Пример:_ `300 500 15 150 1.5 6`"
     )
     if isinstance(event, types.CallbackQuery):
-        await event.message.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
+        await event.message.edit_text(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
         await event.answer()
     else:
         await event.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
@@ -404,9 +445,9 @@ async def process_target_price(message: types.Message, state: FSMContext):
     text = (
         f"🎯 **Рекомендуемая розничная цена**\n"
         f"═══════════════════\n"
-        f"Чтобы забирать чистыми **{target_profit:.2f} ₽** с единицы:\n\n"
+        f"Чтобы забирать чистыми **{target_profit:.2f} ₽** с единицы товара:\n\n"
         f"🏷️ Минимальная цена продажи: **{needed_price:.2f} ₽**\n\n"
-        f"💡 _Совет:_ Сверьте полученную цену с конкурентами."
+        f"🦝 _Совет енота:_ Обязательно сверьтесь с ценами конкурентов перед выставлением!"
     )
     await message.answer(text, reply_markup=get_action_inline_kb(), parse_mode="Markdown")
     await state.clear()
@@ -426,7 +467,7 @@ async def start_niche_analysis(event: types.Message | types.CallbackQuery, state
         "📋 _Пример:_ `1200 400 15 200`"
     )
     if isinstance(event, types.CallbackQuery):
-        await event.message.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
+        await event.message.edit_text(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
         await event.answer()
     else:
         await event.answer(prompt, reply_markup=get_cancel_inline_kb(), parse_mode="Markdown")
@@ -449,11 +490,14 @@ async def process_niche_analysis(message: types.Message, state: FSMContext):
     required_capital = (cost * monthly_sales) + (monthly_sales * 100)
 
     if unit_profit <= 0:
-        niche_verdict = "⛔ Высокий риск: Убытки при выбранной рекламной ставке."
+        niche_verdict = "Высокий риск: Убытки при выбранной рекламной ставке."
+        badge = "⛔ Тонущий корабль"
     elif unit_profit < 150:
-        niche_verdict = "⚡ Низкая маржа: Потребуется большой объем или снижение закупки."
+        niche_verdict = "Низкая маржа: Потребуется гигантский объем или снижение закупки."
+        badge = "⚡ Зона риска"
     else:
-        niche_verdict = "🟢 Перспективно: Хороший запас прочности для старта."
+        niche_verdict = "Перспективно: Отличный запас прочности для старта."
+        badge = "🚀 Золотая жила"
 
     text = (
         f"📈 **Потенциал ниши**\n"
@@ -464,7 +508,8 @@ async def process_niche_analysis(message: types.Message, state: FSMContext):
         f"🏆 Чистая прибыль в месяц: **{total_net_profit:,.2f} ₽**\n"
         f"💼 Старт. капитал на партию: **{required_capital:,.2f} ₽**\n"
         f"═══════════════════\n"
-        f"{niche_verdict}"
+        f"🏅 Статус ниши: **{badge}**\n"
+        f"💡 {niche_verdict}"
     )
 
     categories = ['Капитал', 'Выручка', 'Прибыль']
@@ -482,6 +527,7 @@ async def process_niche_analysis(message: types.Message, state: FSMContext):
             'Чистая прибыль в месяц': f"{total_net_profit:,.2f} руб",
             'Стартовый капитал': f"{required_capital:,.2f} руб"
         },
+        'badge': badge,
         'verdict': niche_verdict,
         'chart': chart_buf
     }
@@ -501,11 +547,11 @@ async def download_pdf_handler(callback: types.CallbackQuery):
         await callback.answer("⚠️ Данные устарели. Пожалуйста, сделайте расчёт заново.", show_alert=True)
         return
 
-    await callback.answer("📄 Генерирую PDF-отчёт...")
+    await callback.answer("📄 Генерирую брендированный PDF-отчёт...")
     pdf_buf = create_pdf_report(calc_data, calc_data['chart'])
     
     doc_file = types.BufferedInputFile(pdf_buf.getvalue(), filename=f"Report_{calc_data.get('platform', 'Market')}.pdf")
-    await callback.message.answer_document(doc_file, caption="Ваш готовый PDF-отчёт! 📄")
+    await callback.message.answer_document(doc_file, caption="Вот твой профессиональный PDF-отчёт! Можешь смело скидывать партнерам 🦝📄")
 
 # --- FALLBACK ---
 @dp.message()
@@ -526,6 +572,8 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     
+    port = int(os.environ.0.get("PORT", 10000) if hasattr(os.environ, "get") else 10000)
+    # Исправление для стандартного получения порта из окружения
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     asyncio.create_task(site.start())
