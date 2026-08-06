@@ -20,6 +20,24 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+# --- НАСТРОЙКА АДМИНА И УЧЕТА ПОЛЬЗОВАТЕЛЕЙ ---
+ADMIN_ID = 1061768872  # Ваш ID уже подставлен!
+
+def log_user(user_id: int):
+    """Сохраняет ID пользователя в файл users.txt, если его там нет"""
+    try:
+        if not os.path.exists("users.txt"):
+            with open("users.txt", "w") as f:
+                pass
+
+        with open("users.txt", "r+") as f:
+            users = f.read().splitlines()
+            if str(user_id) not in users:
+                f.seek(0, 2)
+                f.write(f"{user_id}\n")
+    except Exception as e:
+        print(f"Ошибка логирования пользователя: {e}")
+
 # --- НАСТРОЙКА ШРИФТА (КИРИЛЛИЦА) ---
 FONT_NAME = 'Helvetica'
 FONT_PATH = 'DejaVuSans.ttf'
@@ -238,6 +256,7 @@ def create_pdf_report(calc_data, chart_buf):
 # --- КОМАНДЫ И ОБРАБОТЧИКИ ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
+    log_user(message.from_user.id)  # Записываем пользователя в статистику
     await state.clear()
     await message.answer(
         "Приветствую! 🦝✨\n\n"
@@ -245,6 +264,23 @@ async def start_cmd(message: types.Message, state: FSMContext):
         "Помогу быстро просчитать каждую позицию, уберечь от кассовых разрывов и найти идеальную цену.\n\n"
         "Выбери нужный режим в меню ниже 👇",
         reply_markup=get_main_keyboard(), parse_mode="Markdown"
+    )
+
+# --- КОМАНДА СТАТИСТИКИ ДЛЯ АДМИНА ---
+@dp.message(F.text == "/stats")
+async def show_stats(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    count = 0
+    if os.path.exists("users.txt"):
+        with open("users.txt", "r") as f:
+            count = len(f.read().splitlines())
+
+    await message.answer(
+        f"📊 **Статистика бота:**\n\n"
+        f"👥 Уникальных пользователей: **{count}**",
+        parse_mode="Markdown"
     )
 
 @dp.message(F.text == "🦝 О боте и фишках")
